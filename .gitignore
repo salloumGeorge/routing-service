@@ -1,0 +1,12 @@
+.idea
+db
+gateway
+kafka
+logs
+redis
+services/product/node_modules
+services/user/node_modules
+services/products-api/.gradle
+services/products-api/build
+services/products-manager/.gradle
+services/products-manager/build

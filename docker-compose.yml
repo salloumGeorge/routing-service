@@ -1,0 +1,220 @@
+version: '3'  # specify docker-compose version
+services:
+  product_instance1:
+    #alternative approach is to use the image instead of build
+    #image: product-service
+    build: # this specifies that the service will be built using the Dockerfile in the ./services/product directory
+      context: ./services/product
+    environment:
+      - INSTANCE_ID=product_instance1
+      - PSQL_HOST=postgres_db
+      - PSQL_PORT=5432
+      - PSQL_USER=products_user
+      - PSQL_PASSWORD=products_password
+      - PSQL_SCHEMA=products_schema
+      - PSQL_DB=products
+    ports:
+      - "4001:4000"  # Map container port 4000 to host port 4001
+    networks:
+      - app-network # communicate with other services on the same network
+  product_instance2:
+    build:
+      context: ./services/product
+      # environment variables can be passed to the container
+    environment:
+      - INSTANCE_ID=product_instance2
+      - PSQL_HOST=postgres_db
+      - PSQL_PORT=5432
+      - PSQL_USER=products_user
+      - PSQL_PASSWORD=products_password
+      - PSQL_SCHEMA=products_schema
+      - PSQL_DB=products
+    ports:
+      - "4002:4000"  # Map container port 4000 to host port 4002
+    networks:
+      - app-network
+
+  manager:
+    build:
+      context: ./services/products-manager
+    ports:
+      - "8084:8084"
+    volumes:
+      - ./logs/manager:/var/log
+    networks:
+      - app-network
+    depends_on:
+      - broker
+
+  products-api:
+    build:
+      context: ./services/products-api
+    volumes:
+      - ./logs/api:/var/log
+    networks:
+      - app-network
+    environment:
+      - APP_ENV=docker
+      - PSQL_HOST=postgres_db
+      - PSQL_PORT=5432
+      - PSQL_USER=products_user
+      - PSQL_PASSWORD=products_password
+      - PSQL_SCHEMA=products_schema
+      - PSQL_DB=products
+      - JAVA_TOOL_OPTIONS=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005
+    ports:
+      - "8088:8088"
+      - "5005:5005"
+    depends_on:
+      - postgres_db
+      - broker
+
+  user_instance1:
+    build:
+      context: ./services/user
+    ports:
+      - "3001:3000"  # Map container port 3000 to host port 3001
+    networks:
+      - app-network
+  user_instance2:
+    build:
+      context: ./services/user
+    ports:
+      - "3002:3000"  # Map container port 3000 to host port 3002
+    networks:
+      - app-network
+  nginx:
+    image: nginx:alpine # specify the image to build the container from
+    volumes:
+      # Mount the nginx configuration file from the code repository
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf
+    ports:
+      - "80:80"
+    networks:
+      - app-network
+    depends_on:
+      - manager
+      - products-api
+
+  postgres_db:
+    image: postgres:14.1-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/db_data:/var/lib/postgresql/data/
+      # docker-entrypoint-initdb.d/init.sql will be executed on startup.
+      # the way it works is that the file is copied to the container and then executed
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - app-network
+
+  redis:
+    image: redis:latest
+    command: redis-server --requirepass redis-password
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
+    volumes:
+      - ./redis/data:/data
+
+  broker:
+    image: confluentinc/cp-kafka:7.4.1
+    hostname: broker
+    container_name: broker
+    ports:
+      - "29092:29092"
+      - "29093:29093"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_LISTENERS: 'PLAINTEXT://broker:29092,CONTROLLER://broker:29093,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@broker:29093'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      # Replace CLUSTER_ID with a unique base64 UUID using "bin/kafka-storage.sh random-uuid"
+      # See https://docs.confluent.io/kafka/operations-tools/kafka-tools.html#kafka-storage-sh
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    networks:
+      - app-network
+    volumes:
+      - ./kafka/data:/tmp/kraft-combined-logs/
+
+  init-kafka:
+    image: confluentinc/cp-kafka:7.4.1
+    depends_on:
+      - broker
+    entrypoint: [ '/bin/sh', '-c' ]
+    command: |
+      "
+      # blocks until kafka is reachable
+      kafka-topics --bootstrap-server broker:29092 --list
+      
+      echo -e 'Creating kafka topics'
+      kafka-topics --bootstrap-server broker:29092 --create --if-not-exists --topic products.v0 --replication-factor 1 --partitions 3
+      
+      echo -e 'Successfully created the following topics:'
+      kafka-topics --bootstrap-server broker:29092 --list
+      "
+    networks:
+      - app-network
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.4.1
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      - broker
+      - init-kafka
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'broker:29092'
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    networks:
+      - app-network
+
+
+  control-center:
+    image: confluentinc/cp-enterprise-control-center:7.4.1
+    hostname: control-center
+    container_name: control-center
+    depends_on:
+      - broker
+      - schema-registry
+    ports:
+      - "9021:9021"
+    environment:
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: 'broker:29092'
+      CONTROL_CENTER_CONNECT_CONNECT-DEFAULT_CLUSTER: 'connect:8083'
+      CONTROL_CENTER_KSQL_KSQLDB1_URL: "http://ksqldb-server:8088"
+      CONTROL_CENTER_KSQL_KSQLDB1_ADVERTISED_URL: "http://localhost:8088"
+      CONTROL_CENTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
+      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+      PORT: 9021
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  kafka-data:
+    driver: local
