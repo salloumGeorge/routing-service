@@ -111,6 +111,21 @@ services:
     networks:
       - app-network
 
+  postgres_db_billing:
+    image: postgres:14.1-alpine
+    environment:
+      - POSTGRES_USER=postgres-billing
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./db/db_billing_data:/var/lib/postgresql/data/
+      # docker-entrypoint-initdb.d/init.sql will be executed on startup.
+      # the way it works is that the file is copied to the container and then executed
+      - ./db/billing.init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - app-network
+
   redis:
     image: redis:latest
     command: redis-server --requirepass redis-password
