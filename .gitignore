@@ -1,7 +1,6 @@
 .idea
 db/db_billing_data
 db/db_data
-gateway
 kafka
 logs
 redis
