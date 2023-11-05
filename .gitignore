@@ -10,3 +10,5 @@ services/products-api/.gradle
 services/products-api/build
 services/products-manager/.gradle
 services/products-manager/build
+services/billing/.gradle
+services/billing/build
