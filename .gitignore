@@ -12,3 +12,5 @@ services/products-manager/.gradle
 services/products-manager/build
 services/billing/.gradle
 services/billing/build
+.DS_Store
+```
